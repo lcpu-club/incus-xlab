@@ -531,6 +531,12 @@ var APIExtensions = []string{
 	"network_io_bus_ovn",
 	"dependent",
 	"metrics_project_resources",
+	"xlab_lustre_root_release",
+	"xlab_lustre_root_inspection",
+	"xlab_lustre_root_adoption",
+	"xlab_lustre_capacity_adoption",
+	"xlab_lustre_root_forget",
+	"xlab_lustre_root_preparation",
 }
 
 // APIExtensionsCount returns the number of available API extensions.

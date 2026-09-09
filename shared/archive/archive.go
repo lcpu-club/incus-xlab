@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 
@@ -39,6 +40,10 @@ func (nwc *nullWriteCloser) Close() error {
 //
 // This uses RunWrapper if set.
 func ExtractWithFds(cmdName string, args []string, allowedCmds []string, stdin io.ReadCloser, output *os.File) error {
+	return extractWithNamespace(cmdName, args, allowedCmds, stdin, output, nil, nil)
+}
+
+func extractWithNamespace(cmdName string, args []string, allowedCmds []string, stdin io.ReadCloser, output *os.File, input *os.File, namespace *UnpackNamespace) error {
 	// Needed for RunWrapper.
 	outputPath := output.Name()
 	allowedCmds = append(allowedCmds, cmdName)
@@ -49,6 +54,27 @@ func ExtractWithFds(cmdName string, args []string, allowedCmds []string, stdin i
 	cmd.Stdin = stdin
 	cmd.Stdout = output
 	cmd.Stderr = &nullWriteCloser{&buffer}
+	if namespace != nil {
+		if err := namespace.Validate(); err != nil {
+			return err
+		}
+
+		// The parent opens private cache/output paths before entering the namespace.
+		// Keep their control ancestors inaccessible to the mapped identity.
+		cmd.ExtraFiles = []*os.File{output}
+		if input != nil {
+			cmd.ExtraFiles = append(cmd.ExtraFiles, input)
+		}
+		// Go changes directory before renumbering ExtraFiles in the child.
+		cmd.Dir = fmt.Sprintf("/proc/self/fd/%d", output.Fd())
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags:  unix.CLONE_NEWUSER,
+			UidMappings: namespace.UID,
+			GidMappings: namespace.GID,
+			Credential:  &syscall.Credential{Uid: 0, Gid: 0},
+			Pdeathsig:   syscall.SIGKILL,
+		}
+	}
 
 	// Call the wrapper if defined.
 	if RunWrapper != nil {
@@ -133,11 +159,31 @@ func CompressedTarReader(ctx context.Context, r io.ReadSeeker, unpacker []string
 
 // Unpack extracts image from archive.
 func Unpack(file string, path string, blockBackend bool, maxMemory int64, tracker *ioprogress.ProgressTracker) error {
+	return unpack(file, path, blockBackend, maxMemory, tracker, nil)
+}
+
+// UnpackMapped extracts a container image using its final disk UID/GID mapping.
+// The caller must first assign project quota and give mapped root ownership of
+// the empty destination. Failure leaves incomplete data for explicit cleanup;
+// there is no fallback to extraction with host-root credentials.
+func UnpackMapped(file string, path string, maxMemory int64, tracker *ioprogress.ProgressTracker, namespace UnpackNamespace) error {
+	if err := namespace.Validate(); err != nil {
+		return err
+	}
+	return unpack(file, path, false, maxMemory, tracker, &namespace)
+}
+
+func unpack(file string, path string, blockBackend bool, maxMemory int64, tracker *ioprogress.ProgressTracker, namespace *UnpackNamespace) error {
 	extractArgs, extension, unpacker, err := DetectCompression(file)
 	if err != nil {
 		return err
 	}
 
+	outputPath := path
+	if namespace != nil {
+		outputPath = "/proc/self/fd/3"
+	}
+	var namespaceInput *os.File
 	command := ""
 	args := []string{}
 	var allowedCmds []string
@@ -155,7 +201,7 @@ func Unpack(file string, path string, blockBackend bool, maxMemory int64, tracke
 		args = append(args, "--exclude=./rootfs/dev/*")
 
 		args = append(args, "--restrict", "--force-local")
-		args = append(args, "-C", path, "--numeric-owner", "--xattrs-include=*")
+		args = append(args, "-C", outputPath, "--numeric-owner", "--xattrs-include=*")
 		args = append(args, extractArgs...)
 		args = append(args, "-")
 
@@ -195,8 +241,10 @@ func Unpack(file string, path string, blockBackend bool, maxMemory int64, tracke
 		// unsquashfs does not support reading from stdin,
 		// so ProgressTracker is not possible.
 		command = "unsquashfs"
-		args = append(args, "-f", "-d", path, "-n")
-		args = append(args, "-user-xattrs")
+		args = append(args, "-f", "-d", outputPath, "-n")
+		if namespace == nil {
+			args = append(args, "-user-xattrs")
+		}
 
 		if maxMemory != 0 {
 			// If maximum memory consumption is less than 256MiB, restrict unsquashfs and limit to a single thread.
@@ -208,12 +256,24 @@ func Unpack(file string, path string, blockBackend bool, maxMemory int64, tracke
 
 		// NFS 4.2 can support xattrs, but not security.xattr.
 		if linux.IsNFS(path) {
+			if namespace != nil {
+				return errors.New("Mapped extraction requires security xattrs; NFS is not qualified")
+			}
 			logger.Warn("Unpack: destination path is NFS, disabling non-user xatttr unpacking", logger.Ctx{"file": file, "command": command, "extension": extension, "path": path, "args": args})
 
 			args = append(args, "-user-xattrs")
 		}
 
-		args = append(args, file)
+		if namespace != nil {
+			namespaceInput, err = os.Open(file)
+			if err != nil {
+				return err
+			}
+			defer namespaceInput.Close()
+			args = append(args, "/proc/self/fd/4")
+		} else {
+			args = append(args, file)
+		}
 	} else {
 		return fmt.Errorf("Unsupported image format: %s", extension)
 	}
@@ -230,7 +290,7 @@ func Unpack(file string, path string, blockBackend bool, maxMemory int64, tracke
 		readCloser = io.NopCloser(reader)
 	}
 
-	err = ExtractWithFds(command, args, allowedCmds, readCloser, outputDir)
+	err = extractWithNamespace(command, args, allowedCmds, readCloser, outputDir, namespaceInput, namespace)
 	if err != nil {
 		// We can't create char/block devices in unpriv containers so ignore related errors.
 		if command == "unsquashfs" {

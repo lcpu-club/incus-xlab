@@ -268,7 +268,19 @@ func lxcCreate(s *state.State, args db.InstanceArgs, p api.Project, partialDevic
 	// Setup the initial idmap config.
 	var idmapSet *idmap.Set
 	base := int64(0)
-	if !d.IsPrivileged() {
+	if d.storagePool.Driver().Info().Name == "lustre" {
+		if d.IsPrivileged() {
+			return nil, nil, errors.New("Lustre roots require an unprivileged persistent ID map")
+		}
+		idmapSet, err = storagePools.InitialRootIDMap(d.storagePool, d)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := validateLustreIDMapDelegation(idmapSet); err != nil {
+			return nil, nil, err
+		}
+		base, _ = idmapSet.ShiftIntoNS(0, 0)
+	} else if !d.IsPrivileged() {
 		idmapSet, base, err = d.findIdmap()
 		if err != nil {
 			return nil, nil, err
@@ -1885,6 +1897,23 @@ func (d *lxc) DeviceEventHandler(runConf *deviceConfig.RunConfig) error {
 	return nil
 }
 
+// Incus's cached OS.IdmapSet filters out ranges smaller than 65536, including
+// xlab's root:10000:55536 direct student delegation. Read the full explicit
+// subordinate maps, and observe delegation removal without a daemon restart.
+func validateLustreIDMapDelegation(want *idmap.Set) error {
+	if want == nil {
+		return errors.New("Lustre requires a persistent unprivileged ID map")
+	}
+	delegated, err := idmap.NewSetFromSystem("root")
+	if err != nil {
+		return fmt.Errorf("Read Lustre root ID delegation: %w", err)
+	}
+	if delegated == nil || !delegated.Includes(want) {
+		return errors.New("Host does not delegate the full persistent Lustre root ID map")
+	}
+	return nil
+}
+
 func (d *lxc) handleIdmappedStorage() (idmap.StorageType, *idmap.Set, error) {
 	diskIdmap, err := d.DiskIdmap()
 	if err != nil {
@@ -1897,6 +1926,9 @@ func (d *lxc) handleIdmappedStorage() (idmap.StorageType, *idmap.Set, error) {
 	}
 
 	// Identical on-disk idmaps so no changes required.
+	if d.storagePool != nil && d.storagePool.Driver().Info().Name == "lustre" && !nextIdmap.Equals(diskIdmap) {
+		return idmap.StorageTypeNone, nil, errors.New("Lustre roots cannot change their on-disk ID map")
+	}
 	if nextIdmap.Equals(diskIdmap) {
 		return idmap.StorageTypeNone, nextIdmap, nil
 	}
@@ -1995,7 +2027,11 @@ func (d *lxc) startCommon() (string, []func() error, error) {
 		}
 
 		// Check if we need to change idmap.
-		if nextMap != nil && d.state.OS.IdmapSet != nil && !d.state.OS.IdmapSet.Includes(nextMap) {
+		if d.storagePool != nil && d.storagePool.Driver().Info().Name == "lustre" {
+			if err := validateLustreIDMapDelegation(nextMap); err != nil {
+				return "", nil, err
+			}
+		} else if nextMap != nil && d.state.OS.IdmapSet != nil && !d.state.OS.IdmapSet.Includes(nextMap) {
 			// Update the idmap.
 			idmapSet, base, err := d.findIdmap()
 			if err != nil {
@@ -2844,6 +2880,18 @@ func (d *lxc) Start(stateful bool) error {
 	}
 
 	defer op.Done(nil)
+
+	pool, err := storagePools.LoadByInstance(d.state, d)
+	if err != nil {
+		op.Done(err)
+		return err
+	}
+	unlockRoot, err := storagePools.LockInstanceStart(pool, d)
+	if err != nil {
+		op.Done(err)
+		return err
+	}
+	defer unlockRoot()
 
 	if !daemon.SharedMountsSetup {
 		err = errors.New("Daemon failed to setup shared mounts base. Does security.nesting need to be turned on?")
@@ -7536,6 +7584,16 @@ func (d *lxc) inheritInitPidFd() *os.File {
 
 // FileSFTPConn returns a connection to the forkfile handler.
 func (d *lxc) FileSFTPConn() (net.Conn, error) {
+	pool, err := storagePools.LoadByInstance(d.state, d)
+	if err != nil {
+		return nil, err
+	}
+	unlockRoot, err := storagePools.LockInstanceStart(pool, d)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockRoot()
+
 	// Lock to avoid concurrent spawning.
 	spawnUnlock, err := locking.Lock(context.TODO(), fmt.Sprintf("forkfile_%d", d.id))
 	if err != nil {
@@ -9630,5 +9688,75 @@ func (d *lxc) setNICLink(devName string, connected bool, assumeUp bool) error {
 		}
 	}
 
+	return nil
+}
+
+// XlabReleaseRoot checks the exact releasing authority before stopping anything.
+// The storage driver holds its shared control lock through shutdown, sync and detach,
+// so even a delayed request cannot stop a later owner epoch on this host.
+func (d *lxc) XlabReleaseRoot(req api.XlabRootReleaseRequest) (*api.XlabRootRelease, error) {
+	if d.ephemeral {
+		return nil, errors.New("Ephemeral instances cannot retain a shared root")
+	}
+	pool, err := storagePools.LoadByInstance(d.state, d)
+	if err != nil {
+		return nil, err
+	}
+	var releaseOp *operationlock.InstanceOperation
+	defer func() {
+		if releaseOp != nil {
+			releaseOp.Done(nil)
+		}
+	}()
+	return storagePools.ReleaseInstanceRoot(pool, d, req, func() error {
+		state := d.statusCode()
+		if state != api.Stopped && state != api.Running && state != api.Ready && state != api.Frozen {
+			return errors.New("Instance is not in a stable state for release")
+		}
+		// Close existing file sessions before the normal onStop hook waits for
+		// them. Releasing authority already refuses any new file connection.
+		d.stopForkfile(true)
+		if state != api.Stopped {
+			err := d.Shutdown(30 * time.Second)
+			if err != nil && !errors.Is(err, ErrInstanceIsStopped) {
+				if err := d.Stop(false); err != nil && !errors.Is(err, ErrInstanceIsStopped) {
+					return err
+				}
+			}
+		}
+		var err error
+		releaseOp, err = operationlock.Create(d.Project().Name, d.Name(), d.op, operationlock.Action("xlab_storage_release"), false, false)
+		if err != nil {
+			return err
+		}
+		if d.statusCode() != api.Stopped || d.InitPID() > 0 {
+			return errors.New("Instance is not verifiably stopped")
+		}
+		d.stopForkfile(true)
+		if d.statusCode() != api.Stopped || d.InitPID() > 0 {
+			return errors.New("Instance changed state during release")
+		}
+		return nil
+	})
+}
+
+// XlabRootForgetQuiesced never stops an instance; a stale cleanup request cannot
+// be used to stop a later return migration. The caller holds its operation lock.
+func (d *lxc) XlabRootForgetQuiesced() error {
+	if d.statusCode() != api.Stopped || d.InitPID() > 0 {
+		return errors.New("Metadata forget requires an already stopped instance")
+	}
+	// Release already terminated file sessions. Do not kill or wait without a
+	// bound here: their deferred unmount may need the mount lock held by forget.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	unlock, err := locking.Lock(ctx, d.forkfileRunningLockName())
+	if err != nil {
+		return fmt.Errorf("Metadata forget requires no active file session: %w", err)
+	}
+	defer unlock()
+	if d.statusCode() != api.Stopped || d.InitPID() > 0 {
+		return errors.New("Instance changed state during metadata forget")
+	}
 	return nil
 }

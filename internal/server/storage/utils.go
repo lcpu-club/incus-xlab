@@ -601,10 +601,20 @@ func ImageUnpack(imageFile string, vol drivers.Volume, destBlockFile string, sys
 
 	// If no destBlockFile supplied then this is a container image unpack.
 	if destBlockFile == "" {
+		diskMap, err := vol.ImageUnpackIDMap()
+		if err != nil {
+			return -1, err
+		}
+		if diskMap != nil {
+			if err := imageUnpackMapped(imageFile, destPath, maxMemory, tracker, diskMap); err != nil {
+				return -1, err
+			}
+			return 0, nil
+		}
 		rootfsPath := filepath.Join(destPath, "rootfs")
 
 		// Unpack the main image file.
-		err := archive.Unpack(imageFile, destPath, vol.IsBlockBacked(), maxMemory, tracker)
+		err = archive.Unpack(imageFile, destPath, vol.IsBlockBacked(), maxMemory, tracker)
 		if err != nil {
 			return -1, err
 		}

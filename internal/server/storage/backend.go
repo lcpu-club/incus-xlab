@@ -702,6 +702,16 @@ func (b *backend) CreateInstance(inst instance.Instance, op *operations.Operatio
 					return 0, err
 				}
 
+				diskMap, err := vol.ImageUnpackIDMap()
+				if err != nil {
+					return 0, err
+				}
+				if diskMap != nil {
+					uid, gid := diskMap.ShiftIntoNS(0, 0)
+					if err := os.Chown(filepath.Join(vol.MountPath(), "rootfs"), int(uid), int(gid)); err != nil {
+						return 0, err
+					}
+				}
 				return 0, nil
 			},
 		}
@@ -713,6 +723,10 @@ func (b *backend) CreateInstance(inst instance.Instance, op *operations.Operatio
 	}
 
 	reverter.Add(func() { _ = b.DeleteInstance(inst, op) })
+
+	if err := b.recordCreatedRootIDMap(inst, vol); err != nil {
+		return err
+	}
 
 	err = b.ensureInstanceSymlink(inst.Type(), inst.Project().Name, inst.Name(), vol.MountPath())
 	if err != nil {
@@ -1884,6 +1898,10 @@ func (b *backend) CreateInstanceFromImage(inst instance.Instance, fingerprint st
 		} else if err != nil {
 			return err
 		}
+	}
+
+	if err := b.recordCreatedRootIDMap(inst, vol); err != nil {
+		return err
 	}
 
 	err = b.ensureInstanceSymlink(inst.Type(), inst.Project().Name, inst.Name(), vol.MountPath())
