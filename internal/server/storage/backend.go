@@ -2831,9 +2831,15 @@ func (b *backend) GetInstanceUsage(inst instance.Instance) (*VolumeUsage, error)
 	contentType := InstanceContentType(inst)
 	val := VolumeUsage{}
 
-	// There's no need to pass config as it's not needed when retrieving the volume usage.
+	// Native Lustre usage needs the registered volume authority and quota mode.
 	volStorageName := project.Instance(inst.Project().Name, inst.Name())
 	vol := b.GetVolume(volType, contentType, volStorageName, nil)
+	if b.driver.Info().Name == "lustre" {
+		vol, err = lustreInstanceVolume(b, inst)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Get the usage.
 	size, err := b.driver.GetVolumeUsage(vol)

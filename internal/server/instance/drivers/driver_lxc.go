@@ -2745,15 +2745,18 @@ ff02::2 ip6-allrouters
 		uid, _ = currentIdmapset.ShiftFromNS(0, 0)
 	}
 
-	err = os.Chown(d.Path(), int(uid), 0)
-	if err != nil {
-		return "", nil, err
-	}
-
-	// We only need traversal by root in the container
-	err = os.Chmod(d.Path(), 0o100)
-	if err != nil {
-		return "", nil, err
+	// Lustre's canonical generation is a root-owned control directory, while
+	// rootfs already carries the persistent disk map. Its 0711 traversal mode
+	// is established by the storage driver. Never chown that shared parent.
+	if d.storagePool.Driver().Info().Name != "lustre" {
+		err = os.Chown(d.Path(), int(uid), 0)
+		if err != nil {
+			return "", nil, err
+		}
+		err = os.Chmod(d.Path(), 0o100)
+		if err != nil {
+			return "", nil, err
+		}
 	}
 
 	// If starting stateless, wipe state
@@ -3549,17 +3552,19 @@ func (d *lxc) onStop(args map[string]string) error {
 			}
 		}
 
-		// Remove directory ownership (to avoid issue if uidmap is reused)
-		err := os.Chown(d.Path(), 0, 0)
-		if err != nil {
-			op.Done(fmt.Errorf("Failed clearing ownership: %w", err))
-			return
-		}
-
-		err = os.Chmod(d.Path(), 0o100)
-		if err != nil {
-			op.Done(fmt.Errorf("Failed clearing permissions: %w", err))
-			return
+		// Native Lustre generation ownership and traversal permissions remain
+		// under the storage driver, including when a bind is still mounted.
+		if d.storagePool.Driver().Info().Name != "lustre" {
+			err := os.Chown(d.Path(), 0, 0)
+			if err != nil {
+				op.Done(fmt.Errorf("Failed clearing ownership: %w", err))
+				return
+			}
+			err = os.Chmod(d.Path(), 0o100)
+			if err != nil {
+				op.Done(fmt.Errorf("Failed clearing permissions: %w", err))
+				return
+			}
 		}
 
 		// Stop the storage for this container
