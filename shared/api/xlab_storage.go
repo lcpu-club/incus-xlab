@@ -1,8 +1,11 @@
 package api
 
-import "errors"
+import (
+	"errors"
+	"github.com/google/uuid"
+)
 
-// XlabRootAuthority is the controller's complete contract-3 storage identity.
+// XlabRootAuthority is the controller's complete contract-4 storage identity.
 type XlabRootAuthority struct {
 	IDMap       XlabRootIDMap `json:"id_map"`
 	Version     int           `json:"version"`
@@ -35,16 +38,24 @@ type XlabRootInspection struct {
 	IDMapMatches bool   `json:"id_map_matches"`
 }
 
-// XlabRootIDMap is stable across host transfers and root generation replacement.
-// The platform reserves a full isolated range and directly maps its owner's ID.
+// XlabRootIDMap pins a common system map and one account lease for the root's
+// lifetime. Peer people identities are never included in this namespace.
 type XlabRootIDMap struct {
-	Base   uint32 `json:"base"`
-	UserID uint32 `json:"user_id"`
+	Base       uint32 `json:"base"`
+	LeaseID    string `json:"lease_id"`
+	GuestUID   uint32 `json:"guest_uid"`
+	GuestGID   uint32 `json:"guest_gid"`
+	BackendUID uint32 `json:"backend_uid"`
+	BackendGID uint32 `json:"backend_gid"`
 }
 
 func (m XlabRootIDMap) Validate() error {
-	if m.Base < 65536 || uint64(m.Base)+65536 > 4294967295 || m.UserID < 10000 || m.UserID >= 65536 {
-		return errors.New("Root requires a reserved isolated ID range and a platform user ID")
+	lease, err := uuid.Parse(m.LeaseID)
+	if err != nil || lease == uuid.Nil || lease.String() != m.LeaseID ||
+		m.Base != 100000000 || m.GuestUID < 10000 || m.GuestUID >= 50000 ||
+		m.GuestGID != m.GuestUID || m.BackendUID != 100100000+m.GuestUID-10000 ||
+		m.BackendGID != m.BackendUID {
+		return errors.New("Root requires the provisioned common system map and a canonical account lease")
 	}
 	return nil
 }

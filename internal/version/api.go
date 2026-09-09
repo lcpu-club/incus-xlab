@@ -533,6 +533,7 @@ var APIExtensions = []string{
 	"metrics_project_resources",
 	"xlab_lustre_root_release",
 	"xlab_lustre_root_inspection",
+	"xlab_lustre_identity_v4",
 	"xlab_lustre_root_adoption",
 	"xlab_lustre_capacity_adoption",
 	"xlab_lustre_root_forget",

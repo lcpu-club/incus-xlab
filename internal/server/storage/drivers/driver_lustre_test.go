@@ -13,17 +13,39 @@ import (
 )
 
 func TestLustrePersistentDiskIDMap(t *testing.T) {
-	for _, user := range []uint32{10000, 65535} {
-		m, err := lustreDiskIDMap(api.XlabRootIDMap{Base: 1000000, UserID: user})
+	for _, user := range []uint32{10000, 10007, 49999} {
+		m, err := lustreDiskIDMap(api.XlabRootIDMap{Base: 100000000, LeaseID: "51609467-1037-4876-97b9-02e9dd47138c", GuestUID: user, GuestGID: user, BackendUID: 100100000 + user - 10000, BackendGID: 100100000 + user - 10000})
 		require.NoError(t, err)
 		n := archive.UnpackNamespace{UID: m.ToUIDMappings(), GID: m.ToGIDMappings()}
 		require.NoError(t, n.Validate())
 		uid, gid := m.ShiftIntoNS(0, 0)
-		require.EqualValues(t, 1000000, uid)
-		require.EqualValues(t, 1000000, gid)
+		require.EqualValues(t, 100000000, uid)
+		require.EqualValues(t, 100000000, gid)
 		uid, gid = m.ShiftIntoNS(int64(user), int64(user))
-		require.EqualValues(t, user, uid)
-		require.EqualValues(t, user, gid)
+		require.EqualValues(t, 100100000+user-10000, uid)
+		require.EqualValues(t, 100100000+user-10000, gid)
+		uid, gid = m.ShiftIntoNS(33, 44)
+		require.EqualValues(t, 100000033, uid)
+		require.EqualValues(t, 100000044, gid)
+		peer := int64(10001)
+		if peer == int64(user) {
+			peer++
+		}
+		uid, gid = m.ShiftIntoNS(peer, peer)
+		require.EqualValues(t, 100000000+peer, uid)
+		require.EqualValues(t, 100000000+peer, gid)
+		for guest := int64(0); guest < 65536; guest++ {
+			backend := 100000000 + guest
+			if guest == int64(user) {
+				backend = 100100000 + guest - 10000
+			}
+			uid, gid = m.ShiftFromNS(backend, backend)
+			require.EqualValues(t, guest, uid)
+			require.EqualValues(t, guest, gid)
+		}
+		uid, gid = m.ShiftFromNS(100100000+peer-10000, 100100000+peer-10000)
+		require.EqualValues(t, -1, uid)
+		require.EqualValues(t, -1, gid)
 	}
 }
 
@@ -35,21 +57,26 @@ func TestLustreReadyBindsDiskIDMap(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(base)
 	path := filepath.Join(base, "1")
-	a := &lustreAuthority{IDMap: api.XlabRootIDMap{Base: 1000000, UserID: 10000}, VolumeID: "79072040-6cec-4789-a6c9-ebbdfe93b935", Generation: 1, ProjectID: 1000100}
+	a := &lustreAuthority{IDMap: api.XlabRootIDMap{Base: 100000000, LeaseID: "51609467-1037-4876-97b9-02e9dd47138c", GuestUID: 10000, GuestGID: 10000, BackendUID: 100100000, BackendGID: 100100000}, VolumeID: "79072040-6cec-4789-a6c9-ebbdfe93b935", Generation: 1, ProjectID: 1000100}
 	require.NoError(t, lustreWriteReady(a, path))
 	require.NoError(t, lustreCheckReady(a, path))
 	a.IDMap.Base += 65536
 	require.Error(t, lustreCheckReady(a, path))
 	a.IDMap.Base -= 65536
-	a.IDMap.UserID++
+	a.IDMap.GuestUID++
 	require.Error(t, lustreCheckReady(a, path))
+	a.IDMap.GuestUID--
+	a.IDMap.LeaseID = "41609467-1037-4876-97b9-02e9dd47138c"
+	require.NoError(t, a.IDMap.Validate())
+	require.Error(t, lustreCheckReady(a, path))
+
 }
 
 func TestLustreAuthorityRejectsStaleWriters(t *testing.T) {
 	const volume = "79072040-6cec-4789-a6c9-ebbdfe93b935"
 	const host = "15594190-9b9e-4b68-8cda-51a1ff48187f"
 	authority := lustreAuthority{
-		Version: 3, IDMap: api.XlabRootIDMap{Base: 1000000, UserID: 10000}, Revision: 1, InstanceID: "8b1d8bb1-8aac-45e9-a379-342f047e09a5", VolumeID: volume, OwnerID: host, Epoch: 7, Generation: 3,
+		Version: 4, IDMap: api.XlabRootIDMap{Base: 100000000, LeaseID: "51609467-1037-4876-97b9-02e9dd47138c", GuestUID: 10000, GuestGID: 10000, BackendUID: 100100000, BackendGID: 100100000}, Revision: 1, InstanceID: "8b1d8bb1-8aac-45e9-a379-342f047e09a5", VolumeID: volume, OwnerID: host, Epoch: 7, Generation: 3,
 		ProjectID: 1000100, QuotaBytes: 10 * 1024 * 1024, QuotaInodes: 1000, Phase: "attached",
 	}
 	require.NoError(t, authority.validate(volume, host, 7, 3, "tc-8b1d8bb18aac"))
@@ -67,6 +94,7 @@ func TestLustreAuthorityRejectsStaleWriters(t *testing.T) {
 		func(a *lustreAuthority) { a.QuotaBytes++ },
 		func(a *lustreAuthority) { a.QuotaInodes = 0 },
 		func(a *lustreAuthority) { a.Version++ },
+		func(a *lustreAuthority) { a.Version = 3 },
 		func(a *lustreAuthority) { a.Revision = 0 },
 		func(a *lustreAuthority) { a.InstanceID = "../another-root" },
 	} {
@@ -166,7 +194,7 @@ func TestLustreOperationLockExcludesPublisher(t *testing.T) {
 }
 
 func TestLustreReleaseMatchesExactAuthority(t *testing.T) {
-	a := lustreAuthority{Version: 3, IDMap: api.XlabRootIDMap{Base: 1000000, UserID: 10000}, Revision: 9, VolumeID: "79072040-6cec-4789-a6c9-ebbdfe93b935", InstanceID: "8b1d8bb1-8aac-45e9-a379-342f047e09a5", OwnerID: "15594190-9b9e-4b68-8cda-51a1ff48187f", Epoch: 2, Generation: 1, ProjectID: 1000100, QuotaBytes: 1048576, QuotaInodes: 1000, Phase: "releasing"}
+	a := lustreAuthority{Version: 4, IDMap: api.XlabRootIDMap{Base: 100000000, LeaseID: "51609467-1037-4876-97b9-02e9dd47138c", GuestUID: 10000, GuestGID: 10000, BackendUID: 100100000, BackendGID: 100100000}, Revision: 9, VolumeID: "79072040-6cec-4789-a6c9-ebbdfe93b935", InstanceID: "8b1d8bb1-8aac-45e9-a379-342f047e09a5", OwnerID: "15594190-9b9e-4b68-8cda-51a1ff48187f", Epoch: 2, Generation: 1, ProjectID: 1000100, QuotaBytes: 1048576, QuotaInodes: 1000, Phase: "releasing"}
 	req := api.XlabRootReleaseRequest{VolumeID: a.VolumeID, InstanceID: a.InstanceID, OwnerID: a.OwnerID, Epoch: a.Epoch, Generation: a.Generation, Revision: a.Revision}
 	require.NoError(t, a.checkRelease(req))
 	for _, mutate := range []func(*api.XlabRootReleaseRequest){

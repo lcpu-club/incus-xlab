@@ -9,7 +9,7 @@ import (
 
 func TestLustreForgetRejectsStaleAndReturnedOwnership(t *testing.T) {
 	source := "15594190-9b9e-4b68-8cda-51a1ff48187f"
-	current := lustreAuthority{Version: 3, Revision: 6, VolumeID: "79072040-6cec-4789-a6c9-ebbdfe93b935", InstanceID: "6c646b17-4189-43e9-a98c-5a7cf24de048", OwnerID: "b7487aa2-133c-419b-a5bd-039bc1fcb47f", Epoch: 2, Generation: 1, Phase: "attached", ProjectID: 1000100, QuotaBytes: 1024, QuotaInodes: 10, IDMap: api.XlabRootIDMap{Base: 1000000, UserID: 10000}}
+	current := lustreAuthority{Version: 4, Revision: 6, VolumeID: "79072040-6cec-4789-a6c9-ebbdfe93b935", InstanceID: "6c646b17-4189-43e9-a98c-5a7cf24de048", OwnerID: "b7487aa2-133c-419b-a5bd-039bc1fcb47f", Epoch: 2, Generation: 1, Phase: "attached", ProjectID: 1000100, QuotaBytes: 1024, QuotaInodes: 10, IDMap: api.XlabRootIDMap{Base: 100000000, LeaseID: "51609467-1037-4876-97b9-02e9dd47138c", GuestUID: 10000, GuestGID: 10000, BackendUID: 100100000, BackendGID: 100100000}}
 	req := api.XlabRootForgetRequest{XlabRootInspectionRequest: api.XlabRootInspectionRequest{Authority: api.XlabRootAuthority(current), Pool: "xlab", Source: "/srv/xlab"}, FormerOwnerID: source, FormerEpoch: 1, RootFID: "[0x200000401:0x123:0x0]"}
 	require.NoError(t, current.checkForget(req, source, 1))
 	for _, mutate := range []func(*lustreAuthority){

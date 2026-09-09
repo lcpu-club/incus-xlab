@@ -303,7 +303,7 @@ func (a lustreAuthority) validateIdentity(id string, host string, epoch uint64, 
 	if err := a.IDMap.Validate(); err != nil {
 		return err
 	}
-	if a.Version != 3 || a.Revision == 0 || a.VolumeID != id || a.OwnerID != host || a.Epoch != epoch || a.Generation != generation {
+	if a.Version != 4 || a.Revision == 0 || a.VolumeID != id || a.OwnerID != host || a.Epoch != epoch || a.Generation != generation {
 		return errors.New("Lustre root authority does not match volume, host, epoch and generation")
 	}
 	if lustreCanonicalUUID(a.InstanceID) != nil {

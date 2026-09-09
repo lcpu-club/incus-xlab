@@ -11,10 +11,10 @@ func lustreDiskIDMap(m api.XlabRootIDMap) (*idmap.Set, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
-	base, user := int64(m.Base), int64(m.UserID)
+	base, user, backend := int64(m.Base), int64(m.GuestUID), int64(m.BackendUID)
 	entries := []idmap.Entry{
 		{IsUID: true, IsGID: true, HostID: base, NSID: 0, MapRange: user},
-		{IsUID: true, IsGID: true, HostID: user, NSID: user, MapRange: 1},
+		{IsUID: true, IsGID: true, HostID: backend, NSID: user, MapRange: 1},
 	}
 	if user+1 < 65536 {
 		entries = append(entries, idmap.Entry{IsUID: true, IsGID: true, HostID: base + user + 1, NSID: user + 1, MapRange: 65536 - user - 1})
