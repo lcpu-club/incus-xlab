@@ -2728,7 +2728,7 @@ ff02::2 ip6-allrouters
 
 	// Generate the LXC config
 	configPath := filepath.Join(d.RunPath(), "lxc.conf")
-	err = cc.SaveConfigFile(configPath)
+	err = d.saveLXCConfig(cc, configPath)
 	if err != nil {
 		_ = os.Remove(configPath)
 		return "", nil, err
@@ -7971,7 +7971,7 @@ func (d *lxc) Exec(req api.InstanceExecPost, stdin *os.File, stdout *os.File, st
 			return nil, fmt.Errorf("Load go-lxc struct: %w", err)
 		}
 
-		err = cc.SaveConfigFile(configPath)
+		err = d.saveLXCConfig(cc, configPath)
 		if err != nil {
 			_ = os.Remove(configPath)
 			return nil, err
