@@ -3554,7 +3554,14 @@ func (d *lxc) onStop(args map[string]string) error {
 
 		// Native Lustre generation ownership and traversal permissions remain
 		// under the storage driver, including when a bind is still mounted.
-		if d.storagePool.Driver().Info().Name != "lustre" {
+		// Stop hooks can load a fresh instance whose pool has not been cached.
+		storageType, err := d.getStorageType()
+		if err != nil {
+			op.Done(fmt.Errorf("Failed loading storage pool during stop: %w", err))
+			return
+		}
+
+		if storageType != "lustre" {
 			err := os.Chown(d.Path(), 0, 0)
 			if err != nil {
 				op.Done(fmt.Errorf("Failed clearing ownership: %w", err))
