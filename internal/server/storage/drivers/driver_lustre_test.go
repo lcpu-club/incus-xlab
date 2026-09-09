@@ -60,6 +60,9 @@ func TestLustreReadyBindsDiskIDMap(t *testing.T) {
 	a := &lustreAuthority{IDMap: api.XlabRootIDMap{Base: 100000000, LeaseID: "51609467-1037-4876-97b9-02e9dd47138c", GuestUID: 10000, GuestGID: 10000, BackendUID: 100100000, BackendGID: 100100000}, VolumeID: "79072040-6cec-4789-a6c9-ebbdfe93b935", Generation: 1, ProjectID: 1000100}
 	require.NoError(t, lustreWriteReady(a, path))
 	require.NoError(t, lustreCheckReady(a, path))
+	a.QuotaUnenforced = true
+	require.Error(t, lustreCheckReady(a, path))
+	a.QuotaUnenforced = false
 	a.IDMap.Base += 65536
 	require.Error(t, lustreCheckReady(a, path))
 	a.IDMap.Base -= 65536
@@ -102,6 +105,27 @@ func TestLustreAuthorityRejectsStaleWriters(t *testing.T) {
 		mutation(&changed)
 		require.Error(t, changed.validate(volume, host, 7, 3, "tc-8b1d8bb18aac"))
 	}
+}
+
+func TestLustreUnenforcedQuotaAvoidsBackendCommands(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("Requires trusted root-owned ancestors")
+	}
+	path, err := os.MkdirTemp("/root", "xlab-no-quota-")
+	require.NoError(t, err)
+	defer os.RemoveAll(path)
+	// No lfs executable is available. The enforced control must attempt a real
+	// command, while the explicit unenforced mode performs no project/quota IO.
+	t.Setenv("PATH", path)
+	a := &lustreAuthority{QuotaUnenforced: true, ProjectID: 1000100, QuotaBytes: 1024, QuotaInodes: 10}
+	for _, set := range []bool{false, true} {
+		used, err := lustreQuota(a, path, path, set)
+		require.NoError(t, err)
+		require.EqualValues(t, -1, used)
+	}
+	a.QuotaUnenforced = false
+	_, err = lustreQuota(a, path, path, false)
+	require.Error(t, err)
 }
 
 func TestLustreQuotaTotals(t *testing.T) {

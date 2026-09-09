@@ -20,10 +20,11 @@ import (
 )
 
 type lustreReady struct {
-	IDMap      api.XlabRootIDMap `json:"id_map"`
-	VolumeID   string            `json:"volume_id"`
-	Generation uint64            `json:"generation"`
-	ProjectID  uint32            `json:"project_id"`
+	QuotaUnenforced bool              `json:"quota_unenforced,omitempty"`
+	IDMap           api.XlabRootIDMap `json:"id_map"`
+	VolumeID        string            `json:"volume_id"`
+	Generation      uint64            `json:"generation"`
+	ProjectID       uint32            `json:"project_id"`
 }
 
 func lustreReadyPath(path string) string {
@@ -36,14 +37,14 @@ func lustreCheckReady(authority *lustreAuthority, path string) error {
 	if err != nil {
 		return err
 	}
-	if ready.IDMap != authority.IDMap || ready.IDMap.Validate() != nil || ready.VolumeID != authority.VolumeID || ready.Generation != authority.Generation || ready.ProjectID != authority.ProjectID {
+	if ready.QuotaUnenforced != authority.QuotaUnenforced || ready.IDMap != authority.IDMap || ready.IDMap.Validate() != nil || ready.VolumeID != authority.VolumeID || ready.Generation != authority.Generation || ready.ProjectID != authority.ProjectID {
 		return errors.New("Root generation completion record does not match allocation")
 	}
 	return nil
 }
 
 func lustreWriteReady(authority *lustreAuthority, path string) error {
-	data, err := json.Marshal(lustreReady{IDMap: authority.IDMap, VolumeID: authority.VolumeID, Generation: authority.Generation, ProjectID: authority.ProjectID})
+	data, err := json.Marshal(lustreReady{QuotaUnenforced: authority.QuotaUnenforced, IDMap: authority.IDMap, VolumeID: authority.VolumeID, Generation: authority.Generation, ProjectID: authority.ProjectID})
 	if err != nil {
 		return err
 	}
@@ -213,10 +214,12 @@ func (d *lustre) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.O
 		return err
 	}
 	// Failed creations remain isolated; explicit destroy authority permits retry cleanup.
-	project := strconv.FormatUint(uint64(authority.ProjectID), 10)
-	_, err = subprocess.RunCommandCLocale("lfs", "project", "-p", project, "-s", path)
-	if err != nil {
-		return err
+	if !authority.QuotaUnenforced {
+		project := strconv.FormatUint(uint64(authority.ProjectID), 10)
+		_, err = subprocess.RunCommandCLocale("lfs", "project", "-p", project, "-s", path)
+		if err != nil {
+			return err
+		}
 	}
 	_, err = d.quota(vol, true)
 	if err != nil {

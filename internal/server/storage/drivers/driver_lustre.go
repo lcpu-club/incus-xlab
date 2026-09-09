@@ -316,7 +316,7 @@ func (a lustreAuthority) validateIdentity(id string, host string, epoch uint64, 
 		return errors.New("Root authority belongs to another Incus instance name or project")
 	}
 	if a.ProjectID == 0 || a.QuotaBytes <= 0 || a.QuotaBytes%1024 != 0 || a.QuotaInodes <= 0 {
-		return errors.New("Lustre root requires an allocated project and positive hard limits")
+		return errors.New("Lustre root requires an allocated project and positive allocation limits")
 	}
 	return nil
 }
@@ -398,6 +398,11 @@ func lustreQuota(authority *lustreAuthority, path, source string, set bool) (int
 	if err != nil {
 		return 0, err
 	}
+	if authority.QuotaUnenforced {
+		// Deliberately unenforced: do not create limits that could later become
+		// active through a filesystem-wide switch. Usage is unknown, not zero.
+		return -1, nil
+	}
 	project := strconv.FormatUint(uint64(authority.ProjectID), 10)
 	out, err := subprocess.RunCommandCLocale("lfs", "project", "-d", path)
 	if err != nil {
@@ -447,7 +452,11 @@ func lustreParseQuota(out string) (int64, int64, int64, error) {
 }
 
 func (d *lustre) GetVolumeUsage(vol Volume) (int64, error) {
-	return d.quota(vol, false)
+	used, err := d.quota(vol, false)
+	if err == nil && used < 0 {
+		return 0, ErrNotSupported
+	}
+	return used, err
 }
 
 func (d *lustre) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {

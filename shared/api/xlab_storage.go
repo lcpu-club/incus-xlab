@@ -7,18 +7,19 @@ import (
 
 // XlabRootAuthority is the controller's complete contract-4 storage identity.
 type XlabRootAuthority struct {
-	IDMap       XlabRootIDMap `json:"id_map"`
-	Version     int           `json:"version"`
-	Revision    uint64        `json:"revision"`
-	InstanceID  string        `json:"instance_id"`
-	VolumeID    string        `json:"volume_id"`
-	OwnerID     string        `json:"owner_id"`
-	Epoch       uint64        `json:"epoch"`
-	Generation  uint64        `json:"generation"`
-	ProjectID   uint32        `json:"project_id"`
-	QuotaBytes  int64         `json:"quota_bytes"`
-	QuotaInodes int64         `json:"quota_inodes"`
-	Phase       string        `json:"phase"`
+	QuotaUnenforced bool          `json:"quota_unenforced,omitempty"`
+	IDMap           XlabRootIDMap `json:"id_map"`
+	Version         int           `json:"version"`
+	Revision        uint64        `json:"revision"`
+	InstanceID      string        `json:"instance_id"`
+	VolumeID        string        `json:"volume_id"`
+	OwnerID         string        `json:"owner_id"`
+	Epoch           uint64        `json:"epoch"`
+	Generation      uint64        `json:"generation"`
+	ProjectID       uint32        `json:"project_id"`
+	QuotaBytes      int64         `json:"quota_bytes"`
+	QuotaInodes     int64         `json:"quota_inodes"`
+	Phase           string        `json:"phase"`
 }
 
 // XlabRootInspectionRequest selects the exact authority and local pool binding.
